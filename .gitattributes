@@ -1,0 +1,6 @@
+* text=auto
+
+# Keep shell entry points executable after Windows checkouts.
+gradlew text eol=lf
+*.sh text eol=lf
+*.bat text eol=crlf

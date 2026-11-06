@@ -1,0 +1,247 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/smb_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:measureAllChildren="true">
+
+    <com.example.big.smb.SmbBrowserListView
+        android:id="@+id/smb_entries"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clipToPadding="false"
+        android:divider="@null"
+        android:dividerHeight="0dp"
+        android:saveEnabled="false"
+        android:paddingBottom="88dp" />
+
+    <!-- Attached as the list header before the adapter is installed. -->
+    <LinearLayout
+        android:id="@+id/smb_header"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <FrameLayout
+            android:id="@+id/smb_controls_placeholder"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content">
+
+            <LinearLayout
+                android:id="@+id/smb_controls"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:gravity="center_vertical"
+                    android:orientation="horizontal"
+                    android:paddingHorizontal="12dp">
+
+                    <androidx.appcompat.widget.AppCompatImageButton
+                        android:id="@+id/smb_back"
+                        style="@style/Widget.Big.IconButton"
+                        android:src="@drawable/ic_back"
+                        android:contentDescription="@string/back" />
+
+                    <TextView
+                        android:id="@+id/smb_title"
+                        android:layout_width="0dp"
+                        android:layout_height="wrap_content"
+                        android:layout_weight="1"
+                        android:accessibilityHeading="true"
+                        android:ellipsize="middle"
+                        android:maxLines="1"
+                        android:text="@string/smb_title"
+                        android:textAppearance="?attr/textAppearanceHeadline6" />
+
+                    <androidx.appcompat.widget.AppCompatImageButton
+                        android:id="@+id/smb_up"
+                        style="@style/Widget.Big.IconButton"
+                        android:src="@drawable/ic_up"
+                        android:visibility="gone"
+                        android:contentDescription="@string/smb_up" />
+
+                    <androidx.appcompat.widget.AppCompatImageButton
+                        android:id="@+id/smb_refresh"
+                        style="@style/Widget.Big.IconButton"
+                        android:src="@drawable/ic_refresh"
+                        android:visibility="gone"
+                        android:contentDescription="@string/smb_refresh" />
+
+                    <androidx.appcompat.widget.AppCompatImageButton
+                        android:id="@+id/smb_disconnect"
+                        style="@style/Widget.Big.IconButton"
+                        android:src="@drawable/ic_disconnect"
+                        android:visibility="gone"
+                        android:contentDescription="@string/smb_disconnect" />
+                </LinearLayout>
+
+                <TextView
+                    android:id="@+id/smb_path"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="middle"
+                    android:maxLines="2"
+                    android:paddingHorizontal="16dp"
+                    android:paddingVertical="4dp"
+                    android:textAppearance="?attr/textAppearanceBody1"
+                    android:visibility="gone" />
+            </LinearLayout>
+        </FrameLayout>
+
+        <ProgressBar
+            android:id="@+id/smb_progress"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="4dp"
+            android:indeterminate="true"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/smb_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:accessibilityLiveRegion="polite"
+            android:paddingHorizontal="24dp"
+            android:paddingVertical="8dp"
+            android:visibility="gone" />
+
+        <Button
+            android:id="@+id/smb_cancel"
+            style="@style/Widget.MaterialComponents.Button.TextButton"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="center_horizontal"
+            android:text="@string/smb_cancel_connection"
+            android:visibility="gone" />
+
+        <LinearLayout
+            android:id="@+id/smb_login"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="@string/smb_login_help" />
+
+            <EditText
+                android:id="@+id/smb_address"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:hint="@string/smb_address"
+                android:importantForAutofill="no"
+                android:inputType="textUri"
+                android:minHeight="48dp"
+                android:saveEnabled="false"
+                android:singleLine="true" />
+
+            <CheckBox
+                android:id="@+id/smb_guest"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:minHeight="48dp"
+                android:text="@string/smb_guest" />
+
+            <EditText
+                android:id="@+id/smb_username"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/smb_username"
+                android:importantForAutofill="no"
+                android:inputType="textVisiblePassword"
+                android:minHeight="48dp"
+                android:saveEnabled="false"
+                android:singleLine="true" />
+
+            <EditText
+                android:id="@+id/smb_password"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/smb_password"
+                android:importantForAutofill="no"
+                android:inputType="textPassword"
+                android:minHeight="48dp"
+                android:saveEnabled="false"
+                android:singleLine="true" />
+
+            <EditText
+                android:id="@+id/smb_domain"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="@string/smb_domain"
+                android:importantForAutofill="no"
+                android:inputType="textVisiblePassword"
+                android:minHeight="48dp"
+                android:saveEnabled="false"
+                android:singleLine="true" />
+
+            <Button
+                android:id="@+id/smb_connect"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="16dp"
+                android:text="@string/smb_connect" />
+
+            <TextView
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="@string/smb_credentials_privacy"
+                android:textAppearance="?attr/textAppearanceBody2" />
+        </LinearLayout>
+
+        <LinearLayout
+            android:id="@+id/smb_browser"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <Button
+                android:id="@+id/smb_retry"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center_horizontal"
+                android:text="@string/smb_retry"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/smb_empty"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:padding="24dp"
+                android:visibility="gone" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Hosts the same controls while connected; the login form stays in the list. -->
+    <FrameLayout
+        android:id="@+id/smb_quick_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:accessibilityTraversalBefore="@id/smb_entries"
+        android:background="?android:attr/colorBackground"
+        android:clickable="true"
+        android:elevation="4dp"
+        android:visibility="gone" />
+
+    <com.google.android.material.floatingactionbutton.FloatingActionButton
+        android:id="@+id/smb_favorite"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom|end"
+        android:layout_margin="16dp"
+        android:contentDescription="@string/smb_favorite_add"
+        android:visibility="gone"
+        app:srcCompat="@drawable/ic_star_outline" />
+</FrameLayout>

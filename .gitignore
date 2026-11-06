@@ -1,0 +1,37 @@
+# Gradle and Android build output
+.gradle/
+.kotlin/
+build/
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+*.ap_
+*.dex
+*.hprof
+
+# IDE and machine-local configuration
+.idea/
+.vscode/
+*.iml
+local.properties
+
+# Local secrets and signing credentials
+.env
+.env.*
+!.env.example
+!.env.sample
+*.jks
+*.keystore
+keystore.properties
+key.properties
+
+# Local-only video test fixtures (may contain copyrighted material)
+/app/src/androidTest/assets/**/*.mp4
+/app/src/androidTest/assets/**/*.mkv
+
+# Operating system files
+.DS_Store
+Thumbs.db
+Desktop.ini

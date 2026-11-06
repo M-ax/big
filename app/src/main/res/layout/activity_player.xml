@@ -1,0 +1,183 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/player_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#000000">
+
+    <com.example.big.playback.GlVideoView
+        android:id="@+id/video_layout"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <View
+        android:id="@+id/gesture_surface"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:clickable="true"
+        android:contentDescription="@string/gesture_help"
+        android:focusable="true" />
+
+    <LinearLayout
+        android:id="@+id/player_header"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top"
+        android:background="#B3000000"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <androidx.appcompat.widget.AppCompatImageButton
+            android:id="@+id/back"
+            style="@style/Widget.Big.PlayerIconButton"
+            android:src="@drawable/ic_back"
+            android:contentDescription="@string/back" />
+
+        <com.example.big.playback.ScrollingTitleView
+            android:id="@+id/media_title"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1"
+            android:textColor="#FFFFFF"
+            android:textSize="16sp" />
+
+        <androidx.appcompat.widget.AppCompatImageButton
+            android:id="@+id/lock"
+            style="@style/Widget.Big.PlayerIconButton"
+            android:src="@drawable/ic_lock"
+            android:contentDescription="@string/lock" />
+    </LinearLayout>
+
+    <com.example.big.playback.GestureFeedbackView
+        android:id="@+id/gesture_feedback"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:layoutDirection="ltr"
+        android:paddingHorizontal="24dp"
+        android:paddingVertical="16dp"
+        android:textDirection="ltr"
+        android:textColor="#FFFFFF"
+        android:textSize="22sp"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/playback_status"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="#CC000000"
+        android:padding="12dp"
+        android:text="@string/opening_media"
+        android:textColor="#FFFFFF" />
+
+    <LinearLayout
+        android:id="@+id/player_controls"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:background="#B3000000"
+        android:orientation="vertical"
+        android:padding="8dp">
+
+        <LinearLayout
+            android:id="@+id/player_seek_row"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:gravity="center_vertical"
+            android:layoutDirection="ltr"
+            android:orientation="horizontal">
+
+            <SeekBar
+                android:id="@+id/seek_bar"
+                android:layout_width="0dp"
+                android:layout_height="48dp"
+                android:layout_weight="1"
+                android:contentDescription="@string/seek_position"
+                android:max="1000" />
+
+            <TextView
+                android:id="@+id/playback_time"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:paddingStart="4dp"
+                android:paddingEnd="4dp"
+                android:singleLine="true"
+                android:textDirection="ltr"
+                android:textSize="12sp"
+                android:textColor="#FFFFFF" />
+        </LinearLayout>
+
+        <RelativeLayout
+            android:id="@+id/player_button_row"
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:layoutDirection="ltr">
+
+            <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/tracks"
+                style="@style/Widget.Big.PlayerIconButton"
+                android:layout_alignParentStart="true"
+                android:src="@drawable/ic_tracks"
+                android:contentDescription="@string/tracks" />
+
+            <LinearLayout
+                android:id="@+id/transport_controls"
+                android:layout_width="wrap_content"
+                android:layout_height="48dp"
+                android:layout_centerHorizontal="true"
+                android:orientation="horizontal">
+
+                <androidx.appcompat.widget.AppCompatImageButton
+                    android:id="@+id/seek_back"
+                    style="@style/Widget.Big.PlayerIconButton"
+                    android:src="@drawable/ic_replay_10"
+                    android:contentDescription="@string/seek_back" />
+
+                <androidx.appcompat.widget.AppCompatImageButton
+                    android:id="@+id/play_pause"
+                    style="@style/Widget.Big.PlayerIconButton"
+                    android:padding="8dp"
+                    android:src="@drawable/ic_pause"
+                    android:contentDescription="@string/pause" />
+
+                <androidx.appcompat.widget.AppCompatImageButton
+                    android:id="@+id/seek_forward"
+                    style="@style/Widget.Big.PlayerIconButton"
+                    android:src="@drawable/ic_forward_10"
+                    android:contentDescription="@string/seek_forward" />
+            </LinearLayout>
+
+            <androidx.appcompat.widget.AppCompatButton
+                android:id="@+id/speed"
+                style="@style/Widget.MaterialComponents.Button.TextButton"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_toEndOf="@id/transport_controls"
+                android:minWidth="0dp"
+                android:padding="0dp"
+                android:text="@string/default_speed"
+                android:textAllCaps="false"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp"
+                android:contentDescription="@string/playback_speed" />
+
+            <androidx.appcompat.widget.AppCompatImageButton
+                android:id="@+id/fit"
+                style="@style/Widget.Big.PlayerIconButton"
+                android:layout_alignParentEnd="true"
+                android:src="@drawable/ic_fit"
+                android:contentDescription="@string/fit" />
+        </RelativeLayout>
+    </LinearLayout>
+
+    <androidx.appcompat.widget.AppCompatImageButton
+        android:id="@+id/unlock"
+        style="@style/Widget.Big.PlayerIconButton"
+        android:layout_gravity="top|end"
+        android:layout_margin="12dp"
+        android:background="#B3000000"
+        android:src="@drawable/ic_unlock"
+        android:contentDescription="@string/unlock"
+        android:visibility="gone" />
+</FrameLayout>

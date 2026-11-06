@@ -1,0 +1,12 @@
+<resources>
+    <style name="Widget.Big.IconButton" parent="">
+        <item name="android:layout_width">48dp</item>
+        <item name="android:layout_height">48dp</item>
+        <item name="android:background">?attr/selectableItemBackgroundBorderless</item>
+        <item name="android:padding">12dp</item>
+        <item name="tint">?attr/colorOnSurface</item>
+    </style>
+    <style name="Widget.Big.PlayerIconButton" parent="Widget.Big.IconButton">
+        <item name="tint">@color/player_control_tint</item>
+    </style>
+</resources>

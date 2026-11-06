@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/smb_row_separator"
+    android:layout_width="match_parent"
+    android:layout_height="9dp"
+    android:clickable="false"
+    android:focusable="false"
+    android:importantForAccessibility="noHideDescendants"
+    android:paddingHorizontal="16dp">
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:layout_gravity="center_vertical"
+        android:background="?android:attr/textColorSecondary" />
+</FrameLayout>

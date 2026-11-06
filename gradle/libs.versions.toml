@@ -1,0 +1,27 @@
+[versions]
+agp = "9.4.0"
+junit = "4.13.2"
+junitVersion = "1.3.0"
+espressoCore = "3.7.0"
+appcompat = "1.6.1"
+material = "1.10.0"
+libvlc = "3.7.0"
+testCore = "1.7.0"
+jcifs = "2.1.10"
+lifecycle = "2.6.2"
+
+[libraries]
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
+espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
+appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+libvlc = { group = "org.videolan.android", name = "libvlc-all", version.ref = "libvlc" }
+test-core = { group = "androidx.test", name = "core", version.ref = "testCore" }
+jcifs = { group = "eu.agno3.jcifs", name = "jcifs-ng", version.ref = "jcifs" }
+lifecycle-viewmodel = { group = "androidx.lifecycle", name = "lifecycle-viewmodel", version.ref = "lifecycle" }
+lifecycle-livedata = { group = "androidx.lifecycle", name = "lifecycle-livedata", version.ref = "lifecycle" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+

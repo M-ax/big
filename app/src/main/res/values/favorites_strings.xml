@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="smb_favorites_title">Favorite folders</string>
+    <string name="smb_favorites_empty">Open an SMB folder, then tap the star to save it here. Its login is encrypted on this device for that exact folder. Removing a favorite also deletes its saved login.</string>
+    <string name="smb_favorite_add">Add current folder to favorites</string>
+    <string name="smb_favorite_saved">Current folder is in favorites</string>
+    <string name="smb_favorite_added">Folder added to favorites</string>
+    <string name="smb_favorite_open">Open favorite folder %1$s</string>
+    <string name="smb_favorite_remove">Remove favorite folder %1$s</string>
+    <string name="smb_favorite_removed">Folder removed from favorites</string>
+</resources>
