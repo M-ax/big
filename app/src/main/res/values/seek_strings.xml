@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="fine_seek_hint">Drag down for fine seeking</string>
     <string name="fine_seeking">Fine seeking</string>
     <string name="seek_frame_unavailable">Timestamp preview · exact frames unavailable</string>
 </resources>
