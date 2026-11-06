@@ -518,7 +518,7 @@ public class PlayerActivity extends AppCompatActivity {
                     case SEEK:
                         previewSeek(gestureResult.positionMs, gestureStartPosition);
                         showFeedback(TextUtils.concat(SeekFeedback.format(gestureResult.positionMs, gestureStartPosition, true),
-                                "\n", getString(gestureResult.fineSeeking ? R.string.fine_seeking : R.string.fine_seek_hint)));
+                                gestureResult.fineSeeking ? "\n" + getString(R.string.fine_seeking) : ""));
                         break;
                     case VOLUME:
                         if (audioManager.isVolumeFixed()) {
