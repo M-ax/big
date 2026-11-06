@@ -6,8 +6,9 @@ import java.math.RoundingMode;
 
 /**
  * Calculates playback targets without changing playback or depending on Android.
- * Coarse seeking uses sign(dx) * 600000 * (abs(dx) / width)^4 milliseconds, with
- * no minimum jump. Vertical gain is 1.25; diagonals wait for a 2:1 dominant axis.
+ * Coarse seeking uses a quartic distance curve with a one-hour range per full view
+ * width and no minimum jump: about 14 s at 1/4 width, 3 min 45 s at 1/2 width.
+ * Vertical gain is 1.25; diagonals wait for a 2:1 dominant axis.
  *
  * <p>Configure density and SOURCE frame rate before begin (both are captured for
  * that gesture). Pass ACTION_DOWN's event time to the timed begin overload. For
@@ -29,6 +30,8 @@ import java.math.RoundingMode;
  */
 public final class PlaybackGesture {
     public enum Action { NONE, SEEK, VOLUME, BRIGHTNESS }
+
+    private static final long COARSE_SEEK_RANGE_MS = 60L * 60L * 1000L;
 
     private final float touchSlop;
     private final SeekTouchFilter touchFilter = new SeekTouchFilter();
@@ -239,7 +242,7 @@ public final class PlaybackGesture {
                 positionMs = positionForFrame(fineAnchorFrame.add(dx < 0 ? steps.negate() : steps));
             } else {
                 double distance = Math.abs(dx) / width;
-                long jump = Math.round(600000.0 * Math.pow(distance, 4.0));
+                long jump = Math.round(COARSE_SEEK_RANGE_MS * Math.pow(distance, 4.0));
                 positionMs = dx >= 0.0
                         ? anchorPositionMs + Math.min(jump, durationMs - anchorPositionMs)
                         : anchorPositionMs - Math.min(jump, anchorPositionMs);

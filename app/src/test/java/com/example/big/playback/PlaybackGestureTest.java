@@ -25,27 +25,48 @@ public class PlaybackGestureTest {
     public void coarseSeekStartsAtZeroAndAllowsSubFrameChanges() {
         begin(500f);
         assertEquals(1200000L, gesture.move(511f, 500f).positionMs);
-        assertEquals(1200002L, gesture.move(540f, 500f).positionMs);
-        assertEquals(1199998L, gesture.move(460f, 500f).positionMs);
+        assertEquals(1200009L, gesture.move(540f, 500f).positionMs);
+        assertEquals(1199991L, gesture.move(460f, 500f).positionMs);
         assertEquals(1200000L, gesture.move(500f, 500f).positionMs);
     }
 
     @Test
     public void rightSwipePreviewsForwardSeekWithQuarticCurve() {
-        begin(500f);
+        gesture.begin(0f, 500f, 1000, 1000, 1200000L, 7200000L, true, 8, 20, 0.5f);
+        assertResult(gesture.move(250f, 500f), PlaybackGesture.Action.SEEK,
+                1214063L, 8, 0.5f);
+        assertResult(gesture.move(500f, 500f), PlaybackGesture.Action.SEEK,
+                1425000L, 8, 0.5f);
         assertResult(gesture.move(750f, 500f), PlaybackGesture.Action.SEEK,
-                1202344L, 8, 0.5f);
+                2339063L, 8, 0.5f);
         assertResult(gesture.move(1000f, 500f), PlaybackGesture.Action.SEEK,
-                1237500L, 8, 0.5f);
-        assertResult(gesture.move(1500f, 500f), PlaybackGesture.Action.SEEK,
-                1800000L, 8, 0.5f);
+                4800000L, 8, 0.5f);
     }
 
     @Test
     public void leftSwipePreviewsBackwardSeek() {
         begin(500f);
         assertResult(gesture.move(250f, 500f), PlaybackGesture.Action.SEEK,
-                1197656L, 8, 0.5f);
+                1185937L, 8, 0.5f);
+    }
+
+    @Test
+    public void equalSwipeSegmentsSeekProgressivelyFurtherInBothDirections() {
+        for (int direction : new int[] {-1, 1}) {
+            gesture.begin(500f, 500f, 1000, 1000, 3600000L, 7200000L,
+                    true, 8, 20, 0.5f);
+            long previousPosition = 3600000L;
+            long previousStep = 0L;
+            for (int distance = 100; distance <= 500; distance += 100) {
+                PlaybackGesture.Result result = gesture.move(500f + direction * distance, 500f);
+                assertEquals(PlaybackGesture.Action.SEEK, result.action);
+                long step = direction * (result.positionMs - previousPosition);
+                assertTrue("Each equal segment should seek farther than the last", step > previousStep);
+                previousPosition = result.positionMs;
+                previousStep = step;
+            }
+            assertEquals(3600000L + direction * 225000L, previousPosition);
+        }
     }
 
     @Test
@@ -53,22 +74,22 @@ public class PlaybackGestureTest {
         begin(500f);
         PlaybackGesture.Result first = gesture.move(750f, 500f);
         assertResult(gesture.move(750f, 500f), PlaybackGesture.Action.SEEK,
-                1202344L, 8, 0.5f);
+                1214063L, 8, 0.5f);
         gesture.move(1500f, 500f);
         assertResult(gesture.move(750f, 500f), PlaybackGesture.Action.SEEK,
-                1202344L, 8, 0.5f);
+                1214063L, 8, 0.5f);
         assertResult(gesture.move(500f, 500f), PlaybackGesture.Action.SEEK,
                 1200000L, 8, 0.5f);
         assertResult(gesture.move(250f, 500f), PlaybackGesture.Action.SEEK,
-                1197656L, 8, 0.5f);
-        assertResult(first, PlaybackGesture.Action.SEEK, 1202344L, 8, 0.5f);
+                1185937L, 8, 0.5f);
+        assertResult(first, PlaybackGesture.Action.SEEK, 1214063L, 8, 0.5f);
     }
 
     @Test
     public void seekUsesFractionOfViewWidth() {
         gesture.begin(250f, 500f, 500, 1000, 1200000L, 2400000L, true, 8, 20, 0.5f);
         assertResult(gesture.move(375f, 500f), PlaybackGesture.Action.SEEK,
-                1202344L, 8, 0.5f);
+                1214063L, 8, 0.5f);
     }
 
     @Test
@@ -317,9 +338,9 @@ public class PlaybackGestureTest {
     public void smallSeekKeepsPrecisionNearLongMaximum() {
         gesture.begin(500f, 500f, 1000, 1000, Long.MAX_VALUE - 10000L,
                 Long.MAX_VALUE, true, 8, 20, 0.5f);
-        assertEquals(Long.MAX_VALUE - 9998L, gesture.move(540f, 500f).positionMs);
+        assertEquals(Long.MAX_VALUE - 9991L, gesture.move(540f, 500f).positionMs);
         assertEquals(Long.MAX_VALUE - 10000L, gesture.move(500f, 500f).positionMs);
-        assertEquals(Long.MAX_VALUE - 10002L, gesture.move(460f, 500f).positionMs);
+        assertEquals(Long.MAX_VALUE - 10009L, gesture.move(460f, 500f).positionMs);
     }
 
     @Test
@@ -384,8 +405,8 @@ public class PlaybackGestureTest {
         assertFalse(exit.fineSeeking);
         assertEquals(coarse + 1L, exit.positionMs);
         assertEquals(exit.positionMs, gesture.move(950f, 500f).positionMs);
-        assertEquals(exit.positionMs + 2344L, gesture.move(1200f, 500f).positionMs);
-        assertEquals(exit.positionMs - 2344L, gesture.move(700f, 500f).positionMs);
+        assertEquals(exit.positionMs + 14063L, gesture.move(1200f, 500f).positionMs);
+        assertEquals(exit.positionMs - 14063L, gesture.move(700f, 500f).positionMs);
     }
 
     @Test
@@ -498,7 +519,7 @@ public class PlaybackGestureTest {
         gesture.refineFrameRate(24, 1);
         assertSame(displayed, gesture.move(Float.NaN, 500f, 100L));
         for (int direction : new int[] {0, 1, -1, 0}) {
-            long target = displayed.positionMs + direction * 2344L;
+            long target = displayed.positionMs + direction * 14063L;
             assertEquals(Math.round(Math.round(target * 24.0 / 1000.0) * 1000.0 / 24.0),
                     gesture.move(1000f + direction * 250f, 500f).positionMs);
         }
@@ -603,7 +624,7 @@ public class PlaybackGestureTest {
         gesture.refineFrameRate(24, 1);
         assertEquals(PlaybackGesture.Action.NONE, gesture.move(510f, 500f).action);
         assertEquals(1200000L, gesture.move(511f, 500f).positionMs);
-        assertEquals(Math.round(Math.round(1202344L * 24.0 / 1000.0) * 1000.0 / 24.0),
+        assertEquals(Math.round(Math.round(1214063L * 24.0 / 1000.0) * 1000.0 / 24.0),
                 gesture.move(750f, 500f).positionMs);
     }
 
@@ -785,7 +806,7 @@ public class PlaybackGestureTest {
     public void legacyBeginCanUseTimedMovesAndUntimedFinish() {
         begin(500f);
         PlaybackGesture.Result displayed = gesture.move(750f, 500f, 100L);
-        assertEquals(1202344L, displayed.positionMs);
+        assertEquals(1214063L, displayed.positionMs);
         assertSame(displayed, gesture.finish(1000f, 700f));
     }
 
@@ -814,7 +835,7 @@ public class PlaybackGestureTest {
     @Test
     public void fineFrameStepsWorkAtBackwardNearOriginAndFarCoarseDestinations() {
         gesture.setFrameRate(60000, 1001);
-        for (float x : new float[] {250f, 511f, 750f, 1500f}) {
+        for (float x : new float[] {250f, 511f, 750f, 1250f}) {
             begin(500f);
             long coarse = gesture.move(x, 500f).positionMs;
             long frame = Math.round(coarse * 60000.0 / 1001000.0);
