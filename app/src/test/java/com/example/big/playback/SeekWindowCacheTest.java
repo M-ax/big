@@ -14,6 +14,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 
@@ -21,6 +22,7 @@ import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -544,6 +546,467 @@ public class SeekWindowCacheTest {
         assertEquals(60, cache.prefetchedBytes());
         assertRead(cache, 96, 64);
         assertEquals(1, factory.demandRequests.size());
+    }
+
+    @Test
+    public void stalledPreviewMissDoesNotBlockOtherReadersPlaybackMisses() throws Exception {
+        ChannelFactory factory = new ChannelFactory(256);
+        ChannelSource previewSource = factory.addSource();
+        previewSource.readGate = new CountDownLatch(1);
+        ChannelSource playbackSource = factory.addSource();
+        SeekWindowCache cache = cache(factory);
+        SeekWindowCache.Reader preview = cache.openReader();
+        SeekWindowCache.Reader playback = cache.openReader();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch previewDone = new CountDownLatch(1);
+        Thread stalled = startAction(() -> assertRead(preview::read, 128, 16),
+                failure, previewDone);
+        try {
+            assertTrue(previewSource.readEntered.await(3, TimeUnit.SECONDS));
+            CountDownLatch playbackDone = new CountDownLatch(1);
+            startAction(() -> {
+                assertRead(cache, 0, 16);
+                assertRead(playback::read, 64, 16);
+            }, failure, playbackDone);
+            assertTrue("Playback misses waited for preview source I/O",
+                    playbackDone.await(1, TimeUnit.SECONDS));
+            assertEquals(null, failure.get());
+            assertEquals(1, previewDone.getCount());
+            assertEquals(1, factory.defaultSource.readCalls.get());
+            assertEquals(1, playbackSource.readCalls.get());
+            assertEquals(3, factory.openCalls.get());
+            assertNotSame(previewSource.lastBuffer, factory.defaultSource.lastBuffer);
+            assertNotSame(previewSource.lastBuffer, playbackSource.lastBuffer);
+            assertNotSame(factory.defaultSource.lastBuffer, playbackSource.lastBuffer);
+        } finally {
+            previewSource.readGate.countDown();
+            stalled.join(1000);
+        }
+        assertFalse(stalled.isAlive());
+        assertEquals(null, failure.get());
+    }
+
+    @Test
+    public void cachedHitsBypassEvenTheSameReadersBlockedMiss() throws Exception {
+        for (boolean blockDefault : new boolean[]{false, true}) {
+            ChannelFactory factory = new ChannelFactory(256);
+            SeekWindowCache cache = cache(factory);
+            assertRead(cache, 0, 16);
+            SeekWindowCache.Reader hitOnly = cache.openReader();
+            ChannelSource blockedSource = blockDefault
+                    ? factory.defaultSource : factory.addSource();
+            blockedSource.readEntered = new CountDownLatch(1);
+            blockedSource.readGate = new CountDownLatch(1);
+            SeekWindowCache.Reader preview = cache.openReader();
+            ReadAction blockedReader = blockDefault ? cache::read : preview::read;
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            CountDownLatch missDone = new CountDownLatch(1);
+            Thread stalled = startAction(() -> assertRead(blockedReader, 128, 16),
+                    failure, missDone);
+            try {
+                assertTrue(blockedSource.readEntered.await(3, TimeUnit.SECONDS));
+                CountDownLatch hitsDone = new CountDownLatch(1);
+                startAction(() -> {
+                    assertRead(cache, 2, 11);
+                    assertRead(hitOnly::read, 3, 9);
+                    assertRead(blockedReader, 5, 7);
+                }, failure, hitsDone);
+                assertTrue("Cached reads waited for demand network I/O",
+                        hitsDone.await(1, TimeUnit.SECONDS));
+                assertEquals(null, failure.get());
+                assertEquals(1, missDone.getCount());
+                assertEquals(blockDefault ? 1 : 2, factory.openCalls.get());
+            } finally {
+                blockedSource.readGate.countDown();
+                stalled.join(1000);
+            }
+            assertFalse(stalled.isAlive());
+            assertEquals(null, failure.get());
+        }
+    }
+
+    @Test
+    public void readerRegistrationAndHitOnlyReadsNeverOpenASource() throws Exception {
+        ChannelFactory factory = new ChannelFactory(256);
+        SeekWindowCache cache = cache(factory);
+        assertRead(cache, 0, 16);
+        ChannelSource unused = factory.addSource();
+        unused.openGate = new CountDownLatch(1);
+        AtomicReference<SeekWindowCache.Reader> opened = new AtomicReference<>();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch done = new CountDownLatch(1);
+        Thread registration = startAction(() -> {
+            SeekWindowCache.Reader reader = cache.openReader();
+            opened.set(reader);
+            assertRead(reader::read, 1, 14);
+            assertEquals(0, reader.read(256, new byte[1], 1));
+            assertEquals(0, reader.read(0, new byte[0], 0));
+            reader.close();
+            reader.close();
+        }, failure, done);
+        try {
+            assertTrue("Reader registration/cache hits performed source I/O",
+                    done.await(1, TimeUnit.SECONDS));
+            assertEquals(null, failure.get());
+            assertNotNull(opened.get());
+            assertEquals(1, factory.openCalls.get());
+            assertEquals(1, unused.openEntered.getCount());
+            assertEquals(0, unused.closeCalls.get());
+            assertEquals(0, factory.defaultSource.closeCalls.get());
+            expectIo(() -> opened.get().read(0, new byte[1], 1));
+            assertRead(cache, 0, 16);
+        } finally {
+            unused.openGate.countDown();
+            registration.join(1000);
+        }
+        assertFalse(registration.isAlive());
+    }
+
+    @Test
+    public void queuedMissRechecksCacheAfterTakingItsReadersIoLock() throws Exception {
+        ChannelFactory factory = new ChannelFactory(256);
+        ChannelSource source = factory.addSource();
+        source.readGate = new CountDownLatch(1);
+        SeekWindowCache cache = cache(factory);
+        SeekWindowCache.Reader reader = cache.openReader();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread first = startAction(() -> assertRead(reader::read, 64, 16),
+                failure, new CountDownLatch(1));
+        Thread second = null;
+        try {
+            assertTrue(source.readEntered.await(3, TimeUnit.SECONDS));
+            second = startAction(() -> assertRead(reader::read, 0, 16),
+                    failure, new CountDownLatch(1));
+            Thread queued = second;
+            await(() -> queued.getState() == Thread.State.BLOCKED);
+            assertRead(cache, 0, 16);
+        } finally {
+            source.readGate.countDown();
+            first.join(1000);
+            if (second != null) {
+                second.join(1000);
+            }
+        }
+        assertFalse(first.isAlive());
+        assertNotNull(second);
+        assertFalse(second.isAlive());
+        assertEquals(null, failure.get());
+        assertEquals(1, source.readCalls.get());
+        assertEquals(1, factory.defaultSource.readCalls.get());
+    }
+
+    @Test
+    public void readerCloseCancelsOnlyItsSourceAndPreventsLatePublication() throws Exception {
+        for (boolean cooperateWithClose : new boolean[]{false, true}) {
+            ChannelFactory factory = new ChannelFactory(256);
+            ChannelSource source = factory.addSource();
+            source.readGate = new CountDownLatch(1);
+            source.releaseReadOnClose = cooperateWithClose;
+            source.allowReadAfterClose = !cooperateWithClose;
+            ChannelSource otherSource = factory.addSource();
+            SeekWindowCache cache = cache(factory);
+            SeekWindowCache.Reader reader = cache.openReader();
+            SeekWindowCache.Reader other = cache.openReader();
+            AtomicReference<Throwable> readFailure = new AtomicReference<>();
+            Thread reading = startAction(() -> assertRead(reader::read, 128, 16),
+                    readFailure, new CountDownLatch(1));
+            AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+            CountDownLatch closed = new CountDownLatch(1);
+            try {
+                assertTrue(source.readEntered.await(3, TimeUnit.SECONDS));
+                assertRead(other::read, 0, 16);
+                startAction(reader::close, closeFailure, closed);
+                assertTrue("Reader close waited for the demand I/O lock",
+                        closed.await(1, TimeUnit.SECONDS));
+                assertEquals(null, closeFailure.get());
+                reader.close();
+                expectIo(() -> reader.read(128, new byte[1], 1));
+                assertEquals(1, source.closeCalls.get());
+                assertEquals(16, cache.cachedBytes());
+                assertRead(cache, 0, 16);
+                assertRead(other::read, 16, 16);
+                assertEquals(0, otherSource.closeCalls.get());
+                assertEquals(0, factory.defaultSource.closeCalls.get());
+            } finally {
+                source.readGate.countDown();
+                reading.join(1000);
+            }
+            assertFalse(reading.isAlive());
+            assertTrue(readFailure.get() instanceof IOException);
+            assertEquals(32, cache.cachedBytes());
+            cache.close();
+            assertEquals(1, source.closeCalls.get());
+            assertEquals(1, otherSource.closeCalls.get());
+            assertEquals(1, factory.defaultSource.closeCalls.get());
+        }
+    }
+
+    @Test
+    public void readerCleanupDoesNotHoldSharedCacheLocks() throws Exception {
+        ChannelFactory factory = new ChannelFactory(256);
+        ChannelSource source = factory.addSource();
+        source.closeGate = new CountDownLatch(1);
+        SeekWindowCache cache = cache(factory);
+        SeekWindowCache.Reader reader = cache.openReader();
+        assertRead(reader::read, 0, 16);
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        CountDownLatch closeDone = new CountDownLatch(1);
+        Thread closer = startAction(reader::close, failure, closeDone);
+        try {
+            assertTrue(source.closeEntered.await(3, TimeUnit.SECONDS));
+            CountDownLatch readsDone = new CountDownLatch(1);
+            startAction(() -> {
+                assertEquals(16, cache.cachedBytes());
+                assertRead(cache, 0, 16);
+                assertRead(cache, 16, 16);
+                assertRead(cache.openReader()::read, 0, 16);
+                expectIo(() -> reader.read(0, new byte[1], 1));
+            }, failure, readsDone);
+            assertTrue("Reader cleanup held a shared cache/control lock",
+                    readsDone.await(1, TimeUnit.SECONDS));
+            assertEquals(null, failure.get());
+            assertEquals(1, closeDone.getCount());
+        } finally {
+            source.closeGate.countDown();
+            closer.join(1000);
+        }
+        assertFalse(closer.isAlive());
+        assertEquals(null, failure.get());
+        assertEquals(1, source.closeCalls.get());
+        assertEquals(0, factory.defaultSource.closeCalls.get());
+    }
+
+    @Test
+    public void closeRacingLazyOpenClosesLateSourceOnDemandThread() throws Exception {
+        for (boolean closeOwner : new boolean[]{false, true}) {
+            for (boolean failClose : new boolean[]{false, true}) {
+                ChannelFactory factory = new ChannelFactory(256);
+                ChannelSource source = factory.addSource();
+                source.openGate = new CountDownLatch(1);
+                if (failClose) {
+                    source.closeFailure = new IOException("Late source close failed");
+                }
+                SeekWindowCache cache = cache(factory);
+                SeekWindowCache.Reader reader = cache.openReader();
+                AtomicReference<Throwable> readFailure = new AtomicReference<>();
+                Thread reading = startAction(() -> assertRead(reader::read, 128, 16),
+                        readFailure, new CountDownLatch(1));
+                AtomicReference<Throwable> closeFailure = new AtomicReference<>();
+                CountDownLatch closed = new CountDownLatch(1);
+                try {
+                    assertTrue(source.openEntered.await(3, TimeUnit.SECONDS));
+                    startAction(closeOwner ? cache::close : reader::close, closeFailure, closed);
+                    assertTrue("Close waited for a demand factory.open",
+                            closed.await(1, TimeUnit.SECONDS));
+                    assertEquals(null, closeFailure.get());
+                    assertEquals(0, source.closeCalls.get());
+                    expectIo(() -> reader.read(0, new byte[1], 1));
+                    if (closeOwner) {
+                        expectIo(cache::openReader);
+                        expectIo(() -> cache.read(0, new byte[1], 1));
+                    } else {
+                        assertRead(cache, 0, 16);
+                        assertRead(cache.openReader()::read, 0, 16);
+                    }
+                } finally {
+                    source.openGate.countDown();
+                    reading.join(1000);
+                }
+                assertFalse(reading.isAlive());
+                assertTrue(readFailure.get() instanceof IOException);
+                assertArrayEquals(failClose ? new Throwable[]{source.closeFailure}
+                        : new Throwable[0], readFailure.get().getSuppressed());
+                assertEquals(reading, source.closingThread);
+                assertEquals(1, source.closeCalls.get());
+                assertEquals(0, source.readCalls.get());
+                assertEquals(0, source.lengthCalls.get());
+                assertEquals(closeOwner ? 0 : 16, cache.cachedBytes());
+                reader.close();
+                cache.close();
+                assertEquals(1, source.closeCalls.get());
+            }
+        }
+    }
+
+    @Test
+    public void openAndReadFailuresRemainLocalAndDoNotLeakOrChangeRetrySemantics() throws Exception {
+        ChannelFactory factory = new ChannelFactory(256);
+        ChannelSource failedOpen = factory.addSource();
+        failedOpen.openFailure = new IOException("Demand open failed");
+        ChannelSource source = factory.addSource();
+        SeekWindowCache cache = cache(factory);
+        SeekWindowCache.Reader reader = cache.openReader();
+        expectIo(() -> reader.read(128, new byte[16], 16));
+        assertEquals(2, factory.openCalls.get());
+        assertEquals(0, failedOpen.closeCalls.get()); // No source was returned to the cache.
+        assertNoResidentSlots(cache);
+        assertRead(cache, 0, 16);
+        source.readFailure = new IOException("Demand read failed");
+        expectIo(() -> reader.read(128, new byte[16], 16));
+        assertEquals(3, factory.openCalls.get());
+        assertEquals(16, cache.cachedBytes());
+        assertRead(cache.openReader()::read, 0, 16);
+        source.readFailure = null;
+        assertRead(reader::read, 128, 16);
+        assertEquals(3, factory.openCalls.get()); // A later call reuses its source, not a hidden retry.
+        assertEquals(0, source.lengthCalls.get());
+        source.closeFailure = new IOException("Demand close failed");
+        expectIo(reader::close);
+        reader.close();
+        assertEquals(1, source.closeCalls.get());
+        assertRead(cache, 0, 16);
+        cache.close();
+        assertEquals(1, factory.defaultSource.closeCalls.get());
+        assertEquals(1, source.closeCalls.get());
+    }
+
+    @Test
+    public void ownerCloseCancelsAllReadersAndAggregatesFailures() throws Exception {
+        ChannelFactory factory = new ChannelFactory(256);
+        ChannelSource previewSource = factory.addSource();
+        ChannelSource playbackSource = factory.addSource();
+        factory.defaultSource.closeFailure = new IOException("Default close failed");
+        previewSource.closeFailure = new IOException("Preview close failed");
+        SeekWindowCache cache = cache(factory);
+        SeekWindowCache.Reader preview = cache.openReader();
+        SeekWindowCache.Reader playback = cache.openReader();
+        SeekWindowCache.Reader lazy = cache.openReader();
+        assertRead(preview::read, 32, 16);
+        assertRead(playback::read, 64, 16);
+        for (ChannelSource source : new ChannelSource[]{
+                factory.defaultSource, previewSource, playbackSource}) {
+            source.readEntered = new CountDownLatch(1);
+            source.readGate = new CountDownLatch(1);
+        }
+        AtomicReference<Throwable> defaultFailure = new AtomicReference<>();
+        AtomicReference<Throwable> previewFailure = new AtomicReference<>();
+        AtomicReference<Throwable> playbackFailure = new AtomicReference<>();
+        Thread defaultRead = startAction(() -> assertRead(cache, 0, 16),
+                defaultFailure, new CountDownLatch(1));
+        Thread previewRead = startAction(() -> assertRead(preview::read, 128, 16),
+                previewFailure, new CountDownLatch(1));
+        Thread playbackRead = startAction(() -> assertRead(playback::read, 192, 16),
+                playbackFailure, new CountDownLatch(1));
+        try {
+            assertTrue(factory.defaultSource.readEntered.await(3, TimeUnit.SECONDS));
+            assertTrue(previewSource.readEntered.await(3, TimeUnit.SECONDS));
+            assertTrue(playbackSource.readEntered.await(3, TimeUnit.SECONDS));
+            IOException failure = null;
+            try {
+                cache.close();
+            } catch (IOException exception) {
+                failure = exception;
+            }
+            assertEquals(factory.defaultSource.closeFailure, failure);
+            assertArrayEquals(new Throwable[]{previewSource.closeFailure}, failure.getSuppressed());
+            assertNoResidentSlots(cache);
+            expectIo(() -> lazy.read(64, new byte[1], 1));
+            expectIo(cache::openReader);
+        } finally {
+            factory.defaultSource.readGate.countDown();
+            previewSource.readGate.countDown();
+            playbackSource.readGate.countDown();
+            defaultRead.join(1000);
+            previewRead.join(1000);
+            playbackRead.join(1000);
+        }
+        assertFalse(defaultRead.isAlive());
+        assertFalse(previewRead.isAlive());
+        assertFalse(playbackRead.isAlive());
+        assertTrue(defaultFailure.get() instanceof IOException);
+        assertTrue(previewFailure.get() instanceof IOException);
+        assertTrue(playbackFailure.get() instanceof IOException);
+        cache.close();
+        preview.close();
+        playback.close();
+        lazy.close();
+        for (ChannelSource source : new ChannelSource[]{
+                factory.defaultSource, previewSource, playbackSource}) {
+            assertEquals(1, source.closeCalls.get());
+        }
+    }
+
+    @Test
+    public void additionalReadersHonorCachingEpochsAndDisabledPassThrough() throws Exception {
+        ChannelFactory factory = new ChannelFactory(256);
+        factory.maxRead = 3;
+        ChannelSource source = factory.addSource();
+        source.readGate = new CountDownLatch(1);
+        SeekWindowCache cache = cache(factory);
+        SeekWindowCache.Reader reader = cache.openReader();
+        AtomicReference<Throwable> failure = new AtomicReference<>();
+        Thread reading = startAction(() -> assertRead(reader::read, 5, 27),
+                failure, new CountDownLatch(1));
+        try {
+            assertTrue(source.readEntered.await(3, TimeUnit.SECONDS));
+            cache.setCachingEnabled(false);
+            cache.setCachingEnabled(true);
+        } finally {
+            source.readGate.countDown();
+            reading.join(1000);
+        }
+        assertFalse(reading.isAlive());
+        assertEquals(null, failure.get());
+        assertNoResidentSlots(cache);
+        assertRead(reader::read, 5, 27);
+        int reads = source.readCalls.get();
+        assertRead(cache, 5, 27);
+        assertEquals(0, factory.defaultSource.readCalls.get());
+        assertEquals(32, cache.allocatedBytes());
+        cache.setCachingEnabled(false);
+        assertRead(reader::read, 5, 27);
+        assertTrue(source.readCalls.get() > reads);
+        assertRead(cache, 5, 27);
+        assertTrue(factory.defaultSource.readCalls.get() > 0);
+        assertNoResidentSlots(cache);
+    }
+
+    @Test
+    public void concurrentReaderSourcesKeepPartialBlocksAndEofBytesCorrect() throws Exception {
+        for (long reportedLength : new long[]{256, -1}) {
+            ChannelFactory factory = new ChannelFactory(reportedLength);
+            factory.actualLength = 135;
+            factory.maxRead = 3;
+            factory.addSource();
+            factory.addSource();
+            SeekWindowCache cache = cache(factory);
+            SeekWindowCache.Reader preview = cache.openReader();
+            SeekWindowCache.Reader playback = cache.openReader();
+            ReadAction[] channels = new ReadAction[]{cache::read, preview::read, playback::read};
+            AtomicReference<Throwable> failure = new AtomicReference<>();
+            CountDownLatch start = new CountDownLatch(1);
+            CountDownLatch done = new CountDownLatch(channels.length);
+            for (int i = 0; i < channels.length; i++) {
+                int seed = i;
+                ReadAction channel = channels[i];
+                startAction(() -> {
+                    start.await();
+                    Random random = new Random(seed);
+                    for (int j = 0; j < 200; j++) {
+                        int offset = random.nextInt(150);
+                        int count = 1 + random.nextInt(40);
+                        byte[] actual = new byte[count + 1];
+                        java.util.Arrays.fill(actual, (byte) 0x5a);
+                        int expected = (int) Math.min(count,
+                                Math.max(0, factory.actualLength - offset));
+                        assertEquals(expected, channel.read(offset, actual, count));
+                        for (int k = 0; k < expected; k++) {
+                            assertEquals(valueAt(offset + k), actual[k]);
+                        }
+                        for (int k = expected; k < actual.length; k++) {
+                            assertEquals((byte) 0x5a, actual[k]);
+                        }
+                        assertTrue(cache.allocatedBytes() <= 6 * 16);
+                    }
+                }, failure, done);
+            }
+            start.countDown();
+            assertTrue("Concurrent reader did not complete", done.await(5, TimeUnit.SECONDS));
+            if (failure.get() != null) {
+                throw new AssertionError(failure.get());
+            }
+            assertTrue(factory.openCalls.get() <= 3);
+        }
     }
 
     @After
@@ -1717,7 +2180,7 @@ public class SeekWindowCacheTest {
         return request;
     }
 
-    private SeekWindowCache cache(RecordingFactory factory) throws IOException {
+    private SeekWindowCache cache(SeekWindowCache.SourceFactory factory) throws IOException {
         SeekWindowCache cache = new SeekWindowCache(factory, 16, 2, 500, 2);
         caches.add(cache);
         return cache;
@@ -1726,6 +2189,14 @@ public class SeekWindowCacheTest {
     private static void assertRead(SeekWindowCache cache, long offset, int count) throws IOException {
         byte[] actual = new byte[count];
         assertEquals(count, cache.read(offset, actual, count));
+        for (int i = 0; i < count; i++) {
+            assertEquals("Byte at " + (offset + i), valueAt(offset + i), actual[i]);
+        }
+    }
+
+    private static void assertRead(ReadAction reader, long offset, int count) throws IOException {
+        byte[] actual = new byte[count];
+        assertEquals(count, reader.read(offset, actual, count));
         for (int i = 0; i < count; i++) {
             assertEquals("Byte at " + (offset + i), valueAt(offset + i), actual[i]);
         }
@@ -1761,6 +2232,22 @@ public class SeekWindowCacheTest {
         return thread;
     }
 
+    private static Thread startAction(IoAction action, AtomicReference<Throwable> failure,
+                                      CountDownLatch done) {
+        Thread thread = new Thread(() -> {
+            try {
+                action.run();
+            } catch (Throwable exception) {
+                failure.compareAndSet(null, exception);
+            } finally {
+                done.countDown();
+            }
+        });
+        thread.setDaemon(true);
+        thread.start();
+        return thread;
+    }
+
     private static void expectIo(IoAction action) throws Exception {
         try {
             action.run();
@@ -1774,6 +2261,10 @@ public class SeekWindowCacheTest {
         void run() throws Exception;
     }
 
+    private interface ReadAction {
+        int read(long offset, byte[] buffer, int count) throws IOException;
+    }
+
     private static final class Request {
         final long offset;
         final int count;
@@ -1782,6 +2273,119 @@ public class SeekWindowCacheTest {
         Request(long offset, int count) {
             this.offset = offset;
             this.count = count;
+        }
+    }
+
+    /** Independent, explicitly gated demand channels; existing prefetch fakes stay unchanged. */
+    private static final class ChannelFactory implements SeekWindowCache.SourceFactory {
+        final long length;
+        final BlockingQueue<ChannelSource> plannedSources = new LinkedBlockingQueue<>();
+        final AtomicInteger openCalls = new AtomicInteger();
+        final ChannelSource defaultSource;
+        volatile long actualLength;
+        volatile int maxRead = Integer.MAX_VALUE;
+
+        ChannelFactory(long length) {
+            this.length = length;
+            actualLength = length;
+            defaultSource = addSource();
+        }
+
+        ChannelSource addSource() {
+            ChannelSource source = new ChannelSource(this);
+            plannedSources.add(source);
+            return source;
+        }
+
+        @Override
+        public SeekWindowCache.Source open() throws IOException {
+            openCalls.incrementAndGet();
+            ChannelSource source = plannedSources.poll();
+            if (source == null) {
+                throw new IOException("Unexpected source open");
+            }
+            source.openEntered.countDown();
+            CleanupFactory.awaitClose(source.openGate);
+            if (source.openFailure != null) {
+                throw source.openFailure;
+            }
+            return source;
+        }
+    }
+
+    private static final class ChannelSource implements SeekWindowCache.Source {
+        final ChannelFactory factory;
+        final CountDownLatch openEntered = new CountDownLatch(1);
+        final CountDownLatch closeEntered = new CountDownLatch(1);
+        final AtomicInteger lengthCalls = new AtomicInteger();
+        final AtomicInteger readCalls = new AtomicInteger();
+        final AtomicInteger closeCalls = new AtomicInteger();
+        final AtomicInteger activeReads = new AtomicInteger();
+        volatile CountDownLatch readEntered = new CountDownLatch(1);
+        volatile CountDownLatch openGate = new CountDownLatch(0);
+        volatile CountDownLatch readGate = new CountDownLatch(0);
+        volatile CountDownLatch closeGate = new CountDownLatch(0);
+        volatile boolean releaseReadOnClose = true;
+        volatile boolean allowReadAfterClose;
+        volatile boolean closed;
+        volatile byte[] lastBuffer;
+        volatile Thread closingThread;
+        volatile IOException openFailure;
+        volatile IOException readFailure;
+        volatile IOException closeFailure;
+
+        ChannelSource(ChannelFactory factory) {
+            this.factory = factory;
+        }
+
+        @Override
+        public long length() {
+            lengthCalls.incrementAndGet();
+            return factory.length;
+        }
+
+        @Override
+        public int read(long offset, byte[] buffer, int offsetInBuffer, int count) throws IOException {
+            int concurrent = activeReads.incrementAndGet();
+            try {
+                assertEquals("One source was used concurrently", 1, concurrent);
+                readCalls.incrementAndGet();
+                lastBuffer = buffer;
+                readEntered.countDown();
+                CleanupFactory.awaitClose(readGate);
+                if (readFailure != null) {
+                    throw readFailure;
+                }
+                if (closed && !allowReadAfterClose) {
+                    throw new IOException("Source closed");
+                }
+                if (offset >= factory.actualLength) {
+                    return -1;
+                }
+                int result = (int) Math.min(Math.min(count, factory.maxRead),
+                        factory.actualLength - offset);
+                for (int i = 0; i < result; i++) {
+                    buffer[offsetInBuffer + i] = valueAt(offset + i);
+                }
+                return result;
+            } finally {
+                activeReads.decrementAndGet();
+            }
+        }
+
+        @Override
+        public void close() throws IOException {
+            closed = true;
+            closeCalls.incrementAndGet();
+            closingThread = Thread.currentThread();
+            if (releaseReadOnClose) {
+                readGate.countDown();
+            }
+            closeEntered.countDown();
+            CleanupFactory.awaitClose(closeGate);
+            if (closeFailure != null) {
+                throw closeFailure;
+            }
         }
     }
 

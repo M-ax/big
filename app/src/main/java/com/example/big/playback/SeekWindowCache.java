@@ -5,8 +5,10 @@ import java.io.IOException;
 import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -19,8 +21,9 @@ import java.util.concurrent.TimeUnit;
  * The default per-side slot budget is also capped at maxMemory()/16, rounded down to 256-KiB
  * blocks with a minimum of one per side, plus four foreground slots (at most 1,028 slots total).
  * Resident payload is thus about 1/8 of the maximum heap plus the foreground allowance, excluding
- * metadata and two block-sized transfer buffers. Slots allocate only on publication and release
- * storage on eviction/discard; there is no retained pool of unused payload arrays.
+ * metadata, one block-sized transfer buffer per active demand reader, and the prefetch buffer.
+ * Slots allocate only on publication and release storage on eviction/discard; there is no retained
+ * pool of unused payload arrays. Demand readers share cache payload, never source I/O locks.
  */
 public final class SeekWindowCache implements Closeable {
     public interface Source extends Closeable {
@@ -43,18 +46,17 @@ public final class SeekWindowCache implements Closeable {
     private static final long RETRY_NANOS = TimeUnit.SECONDS.toNanos(1);
 
     private final SourceFactory factory;
-    private final Source demandSource;
+    private final Reader defaultReader;
+    private final Set<Reader> readers = new LinkedHashSet<>();
     private final long size;
     private final int blockSize;
     private final long bytesPerSide;
     private final long previewBytesPerSide;
     private final long windowMs;
     private final int foregroundBlocks;
-    private final byte[] demandBuffer;
     private final Entry[] slots;
     private final Map<Long, Entry> entries = new HashMap<>();
     private final Object memoryLock = new Object();
-    private final Object demandLock = new Object();
     private final Object control = new Object();
     private final Object closeLock = new Object();
     private final Thread worker;
@@ -103,7 +105,6 @@ public final class SeekWindowCache implements Closeable {
         this.previewBytesPerSide = Math.min(this.bytesPerSide, previewBytesPerSide);
         this.windowMs = windowMs;
         this.foregroundBlocks = foregroundBlocks;
-        demandBuffer = new byte[blockSize];
         slots = new Entry[2 * blocksPerSide + foregroundBlocks];
         Source opened = null;
         long openedSize;
@@ -117,8 +118,9 @@ public final class SeekWindowCache implements Closeable {
             }
             throw exception;
         }
-        demandSource = opened;
         size = openedSize;
+        defaultReader = new Reader(opened);
+        readers.add(defaultReader);
         worker = new Thread(this::prefetchLoop, "seek-window-cache");
         worker.setDaemon(true);
         worker.start();
@@ -131,30 +133,58 @@ public final class SeekWindowCache implements Closeable {
 
     /** Reads into buffer[0..count), returning zero at EOF, as required by proxy FD onRead. */
     public int read(long offset, byte[] buffer, int count) throws IOException {
-        Objects.requireNonNull(buffer);
-        if (offset < 0) {
-            throw new IllegalArgumentException("Negative offset");
-        }
-        if (count < 0 || count > buffer.length) {
-            throw new IndexOutOfBoundsException("Invalid count");
-        }
-        long generation;
+        return defaultReader.read(offset, buffer, count);
+    }
+
+    /**
+     * Registers an independent demand reader without source I/O. Cache hits need no connection;
+     * its source and block-sized transfer buffer are opened/allocated lazily on the first miss.
+     */
+    public Reader openReader() throws IOException {
         synchronized (control) {
             ensureOpen();
-            generation = cacheGeneration;
-            foregroundRequests++;
-            revision++;
-            control.notifyAll();
+            Reader reader = new Reader(null);
+            readers.add(reader);
+            return reader;
         }
-        try {
-            synchronized (demandLock) {
-                ensureOpen();
+    }
+
+    /** An independent demand-I/O channel, invalidated by its own close or the owning cache's close. */
+    public final class Reader implements Closeable {
+        private final Object ioLock = new Object();
+        // Source/buffer installation and detachment use control, never the I/O lock.
+        private Source source;
+        private byte[] transferBuffer;
+        private volatile boolean readerClosed;
+
+        private Reader(Source source) {
+            this.source = source;
+        }
+
+        /** Same offset/count and zero-at-EOF contract as the default cache reader. */
+        public int read(long offset, byte[] buffer, int count) throws IOException {
+            Objects.requireNonNull(buffer);
+            if (offset < 0) {
+                throw new IllegalArgumentException("Negative offset");
+            }
+            if (count < 0 || count > buffer.length) {
+                throw new IndexOutOfBoundsException("Invalid count");
+            }
+            long generation;
+            synchronized (control) {
+                ensureReaderOpen();
+                generation = cacheGeneration;
+                foregroundRequests++;
+                revision++;
+                control.notifyAll();
+            }
+            try {
                 long remaining = (size >= 0 ? size : Long.MAX_VALUE) - offset;
                 int wanted = (int) Math.min(count, Math.max(0, remaining));
                 int copied = 0;
                 while (copied < wanted) {
                     long position = offset + copied;
-                    int hit = readCached(position, buffer, copied, wanted - copied);
+                    int hit = readCached(this, position, buffer, copied, wanted - copied);
                     if (hit == 0) {
                         break;
                     }
@@ -162,26 +192,93 @@ public final class SeekWindowCache implements Closeable {
                         copied += hit;
                         continue;
                     }
-                    long block = position / blockSize;
-                    long start = block * blockSize;
-                    int from = (int) (position - start);
-                    int expected = demandLength(block, from, wanted - copied);
-                    Fetch fetched = fetch(demandSource, position, expected, demandBuffer, null);
-                    publish(block, from, fetched, demandBuffer, null, generation);
-                    System.arraycopy(demandBuffer, 0, buffer, copied, fetched.length);
-                    copied += fetched.length;
-                    if (fetched.eof) {
-                        break;
+                    // Only misses serialize, and only on this reader's source/transfer buffer.
+                    synchronized (ioLock) {
+                        hit = readCached(this, position, buffer, copied, wanted - copied);
+                        if (hit == 0) {
+                            break;
+                        }
+                        if (hit > 0) {
+                            copied += hit;
+                            continue;
+                        }
+                        Source input = demandSource();
+                        byte[] transfer;
+                        synchronized (control) {
+                            ensureReaderOpen();
+                            if (transferBuffer == null) {
+                                transferBuffer = new byte[blockSize];
+                            }
+                            transfer = transferBuffer;
+                        }
+                        long block = position / blockSize;
+                        int from = (int) (position % blockSize);
+                        int expected = demandLength(block, from, wanted - copied);
+                        Fetch fetched = fetch(input, position, expected, transfer, null, this);
+                        publish(block, from, fetched, transfer, null, generation, this);
+                        System.arraycopy(transfer, 0, buffer, copied, fetched.length);
+                        copied += fetched.length;
+                        if (fetched.eof) {
+                            break;
+                        }
                     }
                 }
-                ensureOpen();
+                ensureReaderOpen();
                 return copied;
+            } finally {
+                synchronized (control) {
+                    foregroundRequests--;
+                    revision++;
+                    control.notifyAll();
+                }
             }
-        } finally {
+        }
+
+        private Source demandSource() throws IOException {
             synchronized (control) {
-                foregroundRequests--;
-                revision++;
-                control.notifyAll();
+                ensureReaderOpen();
+                if (source != null) {
+                    return source;
+                }
+            }
+            Source opened = factory.open();
+            synchronized (control) {
+                if (!closed && !readerClosed) {
+                    source = opened;
+                    return opened;
+                }
+            }
+            throw closeResource(opened, new IOException("Reader closed while opening source"));
+        }
+
+        /**
+         * Cancels only this reader, without waiting for its I/O lock. Call off the UI thread:
+         * source cleanup may perform I/O. A pending open cleans up its own late source before the
+         * read fails; close does not wait for that open or permit it to install/publish afterward.
+         */
+        @Override
+        public void close() throws IOException {
+            Source detached;
+            synchronized (control) {
+                if (readerClosed) {
+                    return;
+                }
+                readerClosed = true;
+                detached = source;
+                source = null;
+                transferBuffer = null;
+                readers.remove(this);
+            }
+            IOException failure = closeResource(detached, null);
+            if (failure != null) {
+                throw failure;
+            }
+        }
+
+        private void ensureReaderOpen() throws IOException {
+            ensureOpen();
+            if (readerClosed) {
+                throw new IOException("Reader is closed");
             }
         }
     }
@@ -294,7 +391,7 @@ public final class SeekWindowCache implements Closeable {
         }
     }
 
-    /** Retained slot byte-array storage only; excludes metadata and the two transfer buffers. */
+    /** Retained slot byte-array storage only; excludes metadata and readers' transfer buffers. */
     public long allocatedBytes() {
         synchronized (memoryLock) {
             long allocated = 0;
@@ -317,11 +414,14 @@ public final class SeekWindowCache implements Closeable {
     /**
      * Discards resident slots before cancelling sources and joining the worker, even if close fails.
      * Call off the UI thread. Adapters must support concurrent close/read cancellation or bounded
-     * I/O timeouts; an in-progress factory.open must also terminate for this join to finish.
+     * I/O timeouts; a speculative factory.open must also terminate for the worker join to finish.
+     * Demand opens are not joined: their readers reject and clean up late sources on the demand
+     * thread, as described by Reader.close.
      */
     @Override
     public void close() throws IOException {
         synchronized (closeLock) {
+            Reader[] closing;
             synchronized (memoryLock) {
                 synchronized (control) {
                     if (closed) {
@@ -329,6 +429,7 @@ public final class SeekWindowCache implements Closeable {
                     }
                     closed = true;
                     clearEntries();
+                    closing = readers.toArray(new Reader[0]);
                     // Source close can perform network I/O; do not interrupt cleanup already underway.
                     if (!workerClosingSource) {
                         worker.interrupt();
@@ -336,7 +437,10 @@ public final class SeekWindowCache implements Closeable {
                     control.notifyAll();
                 }
             }
-            IOException failure = closeResource(demandSource, null);
+            IOException failure = null;
+            for (Reader reader : closing) {
+                failure = closeResource(reader, failure);
+            }
             failure = closeResource(detachPrefetchSource(), failure);
             boolean interrupted = false;
             while (worker.isAlive()) {
@@ -356,9 +460,10 @@ public final class SeekWindowCache implements Closeable {
         }
     }
 
-    private int readCached(long position, byte[] buffer, int offset, int count) throws IOException {
+    private int readCached(Reader reader, long position, byte[] buffer, int offset, int count)
+            throws IOException {
         synchronized (memoryLock) {
-            ensureOpen();
+            reader.ensureReaderOpen();
             Entry entry = entries.get(position / blockSize);
             int from = (int) (position % blockSize);
             if (entry == null || from < entry.from) {
@@ -386,12 +491,16 @@ public final class SeekWindowCache implements Closeable {
         }
     }
 
-    private Fetch fetch(Source source, long start, int count, byte[] buffer, Window target)
+    private Fetch fetch(Source source, long start, int count, byte[] buffer, Window target,
+                        Reader reader)
             throws IOException {
         int total = 0;
         // The original block-sized request stays bounded even while playback keeps advancing.
         while (total < count) {
             ensureOpen();
+            if (reader != null) {
+                reader.ensureReaderOpen();
+            }
             if (target != null && !awaitSpeculation(target, start, count)) {
                 return null;
             }
@@ -470,9 +579,9 @@ public final class SeekWindowCache implements Closeable {
                         return;
                     }
                     Fetch fetched = fetch(source, candidate.block * blockSize + candidate.from,
-                            candidate.length, buffer, target);
+                            candidate.length, buffer, target, null);
                     if (fetched != null) {
-                        publish(candidate.block, candidate.from, fetched, buffer, target, 0);
+                        publish(candidate.block, candidate.from, fetched, buffer, target, 0, null);
                     }
                 } catch (IOException exception) {
                     retryAt = System.nanoTime() + RETRY_NANOS;
@@ -587,7 +696,7 @@ public final class SeekWindowCache implements Closeable {
     }
 
     private void publish(long block, int from, Fetch fetched, byte[] buffer, Window target,
-                         long generation)
+                         long generation, Reader reader)
             throws IOException {
         synchronized (memoryLock) {
             synchronized (control) {
@@ -595,6 +704,9 @@ public final class SeekWindowCache implements Closeable {
                     return;
                 }
                 ensureOpen();
+                if (reader != null) {
+                    reader.ensureReaderOpen();
+                }
                 if (!cachingEnabled || (target == null ? generation != cacheGeneration
                         : !window.enabled || window.generation != target.generation)) {
                     return;
