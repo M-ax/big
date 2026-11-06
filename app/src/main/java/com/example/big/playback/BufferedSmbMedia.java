@@ -16,11 +16,15 @@ import com.example.big.smb.SmbSession;
 
 import java.io.Closeable;
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 /** A seekable local descriptor backed by a private, bounded SMB memory cache. */
 public final class BufferedSmbMedia implements Closeable {
     private final SeekWindowCache cache;
-    private final HandlerThread readerThread;
+    private final Set<ProxyReader> readers = new HashSet<>();
     private final ParcelFileDescriptor descriptor;
     private final StorageManager storage;
     private boolean closed;
@@ -45,14 +49,15 @@ public final class BufferedSmbMedia implements Closeable {
 
     BufferedSmbMedia(Context context, SeekWindowCache cache) throws IOException {
         this.cache = cache;
-        readerThread = new HandlerThread("smb-playback-reader");
-        readerThread.start();
         try {
             storage = context.getApplicationContext().getSystemService(StorageManager.class);
-            descriptor = openIndependentDescriptor();
+            descriptor = openDescriptor(null);
         } catch (IOException | RuntimeException exception) {
-            readerThread.quitSafely();
-            cache.close();
+            try {
+                cache.close();
+            } catch (IOException cleanup) {
+                exception.addSuppressed(cleanup);
+            }
             throw exception;
         }
     }
@@ -62,33 +67,79 @@ public final class BufferedSmbMedia implements Closeable {
     }
 
     /**
-     * Caller-owned reader with an independent file position, sharing only the immutable byte cache.
+     * Caller-owned reader with its own callback thread and lazy source, sharing only the byte cache.
      * dup() is not sufficient: Android's frame extractor uses lseek/read and would reposition VLC's
-     * descriptor too. This reader is valid until it or the owning BufferedSmbMedia is closed.
+     * descriptor too. A slow preview read must not block even an uncached playback read. Creation
+     * performs no source I/O; this reader is valid until it or the owning BufferedSmbMedia is closed.
      */
     public synchronized ParcelFileDescriptor openIndependentDescriptor() throws IOException {
         if (closed) throw new IOException("Media reader closed");
-        return storage.openProxyFileDescriptor(ParcelFileDescriptor.MODE_READ_ONLY,
-                new ProxyFileDescriptorCallback() {
-                    @Override
-                    public long onGetSize() {
-                        return cache.length();
-                    }
+        return openDescriptor(cache.openReader());
+    }
 
-                    @Override
-                    public int onRead(long offset, int size, byte[] data) throws ErrnoException {
-                        try {
-                            return cache.read(offset, data, size);
-                        } catch (IOException | RuntimeException exception) {
-                            throw new ErrnoException("SMB read", OsConstants.EIO);
-                        }
-                    }
+    private synchronized ParcelFileDescriptor openDescriptor(SeekWindowCache.Reader reader) throws IOException {
+        ProxyReader proxy = new ProxyReader(reader);
+        readers.add(proxy);
+        try {
+            proxy.thread.start();
+            return storage.openProxyFileDescriptor(ParcelFileDescriptor.MODE_READ_ONLY,
+                    proxy, new Handler(proxy.thread.getLooper()));
+        } catch (IOException | RuntimeException exception) {
+            try {
+                proxy.close();
+            } catch (IOException cleanup) {
+                exception.addSuppressed(cleanup);
+            }
+            throw exception;
+        }
+    }
 
-                    @Override
-                    public void onRelease() {
-                        // Closing one decoder's reader must not close the other decoder's cache.
-                    }
-                }, new Handler(readerThread.getLooper()));
+    private final class ProxyReader extends ProxyFileDescriptorCallback implements Closeable {
+        private final SeekWindowCache.Reader reader;
+        private final HandlerThread thread;
+        private boolean released;
+
+        ProxyReader(SeekWindowCache.Reader reader) {
+            this.reader = reader;
+            thread = new HandlerThread(reader == null ? "smb-playback-reader" : "smb-preview-reader");
+        }
+
+        @Override
+        public long onGetSize() {
+            return cache.length();
+        }
+
+        @Override
+        public int onRead(long offset, int size, byte[] data) throws ErrnoException {
+            try {
+                return reader == null ? cache.read(offset, data, size) : reader.read(offset, data, size);
+            } catch (IOException | RuntimeException exception) {
+                throw new ErrnoException("SMB read", OsConstants.EIO);
+            }
+        }
+
+        @Override
+        public void onRelease() {
+            try {
+                close();
+            } catch (IOException ignored) {
+                // Release has no error channel, and must still stop this reader's callback thread.
+            }
+        }
+
+        @Override
+        public void close() throws IOException {
+            synchronized (BufferedSmbMedia.this) {
+                if (released) return;
+                released = true;
+                readers.remove(this);
+            }
+            try {
+                if (reader != null) reader.close();
+            } finally {
+                thread.quitSafely();
+            }
+        }
     }
 
     public void updatePlayback(long positionMs, long durationMs, boolean activeAndBuffered) {
@@ -120,18 +171,33 @@ public final class BufferedSmbMedia implements Closeable {
 
     @Override
     public void close() throws IOException {
+        List<ProxyReader> closing;
         synchronized (this) {
             if (closed) return;
             closed = true;
+            closing = new ArrayList<>(readers);
         }
+        IOException failure = null;
         try {
             descriptor.close();
+        } catch (IOException exception) {
+            failure = exception;
+        }
+        try {
+            cache.close();
+        } catch (IOException exception) {
+            if (failure == null) failure = exception;
+            else failure.addSuppressed(exception);
         } finally {
-            try {
-                cache.close();
-            } finally {
-                readerThread.quitSafely();
+            for (ProxyReader reader : closing) {
+                try {
+                    reader.close();
+                } catch (IOException exception) {
+                    if (failure == null) failure = exception;
+                    else failure.addSuppressed(exception);
+                }
             }
         }
+        if (failure != null) throw failure;
     }
 }
